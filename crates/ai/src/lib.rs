@@ -18,6 +18,8 @@ pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ocr;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod speech;
 
 #[cfg(not(target_arch = "wasm32"))]
