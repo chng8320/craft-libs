@@ -20,6 +20,7 @@
 
 pub mod catalog;
 pub mod diarize;
+pub mod live;
 pub mod mel;
 pub mod models;
 pub mod remote;

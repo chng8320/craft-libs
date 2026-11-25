@@ -54,3 +54,11 @@ downloader, speaker labelling, word-edge tightening, catalogue speech models (`t
 folders and OpenAI-compatible endpoints). Times are 16 kHz samples (`Samples`), which each app maps to its own
 time base. `craft-ai-cli transcribe --file AUDIO [--model] [--device] [--language] [--speakers N]`; `download`
 and `models` cover speech models too.
+
+## Live captions and translation (craft_ai::speech::live)
+
+`craft-ai-cli live --in rtmp://… --model whisper-large-v3-turbo --device gpu --language vi --translate en,fr
+--translate-model qwen3-8b-q4km --captions "vtt:/srv/live-{lang}.vtt" --captions https://app/captions`: craft-live
+reads the stream, pauses cut it into utterances, each is transcribed with any speech model and translated with any
+chat model (each on its own device), and the captions go to WebVTT, SRT, JSON lines or a webhook, one output per
+language with `{lang}`. Times are the stream's.

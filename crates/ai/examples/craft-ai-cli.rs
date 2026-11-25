@@ -44,6 +44,12 @@ craft-ai-cli transcribe --file AUDIO [--model whisper-small] [--device D] [--lan
   model, or a catalogue speech model (a Whisper folder or an endpoint); default CRAFT_AI_SPEECH_MODEL, else
   whisper-small
 craft-ai-cli download <model id> [--dir DIR] [--catalog FILE]
+craft-ai-cli live --in URL|DEVICE|FILE [--in-format F] [--model SPEECH] [--device D] [--language vi|auto]
+  [--translate vi,en] [--translate-model CHAT] [--translate-device D] --captions SPEC… [--pause 0.6]
+  [--max-segment 8] [--seconds N]
+  live captions as they are spoken: each pause ends a caption, which is translated into each language.
+  --captions (repeatable): vtt:PATH, srt:PATH, jsonl:PATH (jsonl:- standard output) or an http(s) webhook;
+  {lang} in it makes one output per language (the spoken one and each translation)
 craft-ai-cli complete  <model> (--prompt TEXT | --prompt-file FILE) [--max-tokens N] [--temperature T]
 craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segments-file FILE.json)
   <model>: [--model ID] [--dir DIR] [--catalog FILE] [--device D] [--template T [--stop A,B]]
@@ -62,6 +68,10 @@ craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segm
 struct Args(Vec<String>);
 
 impl Args {
+    /// Every value of a flag given more than once.
+    fn flags(&self, name: &str) -> Vec<&str> {
+        self.0.windows(2).filter(|w| w[0] == name).map(|w| w[1].as_str()).collect()
+    }
     fn flag(&self, name: &str) -> Option<&str> {
         self.0.iter().position(|a| a == name).and_then(|i| self.0.get(i + 1)).map(String::as_str)
     }
@@ -88,6 +98,7 @@ fn main() -> ExitCode {
         Some("complete") => complete(&args),
         Some("translate") => translate(&args),
         Some("transcribe") => transcribe(&args),
+        Some("live") => live(&args),
         Some("help" | "--help" | "-h") | None => {
             println!("{HELP}");
             return ExitCode::SUCCESS;
@@ -219,13 +230,18 @@ fn download(a: &Args) -> Result<Value, String> {
 /// The provider the arguments name: a remote endpoint, or a model from the catalogue (which may
 /// itself be an endpoint), or a GGUF file.
 fn provider(a: &Args) -> Result<Box<dyn Provider>, String> {
+    provider_with(a, a.flag("--model"), a.flag("--device"))
+}
+
+/// [`provider`] with the model and device taken from other flags (live translation has its own).
+fn provider_with(a: &Args, model: Option<&str>, device_flag: Option<&str>) -> Result<Box<dyn Provider>, String> {
     use craft_ai::catalog::Source;
     if let Some(endpoint) = a.flag("--endpoint") {
         let model = a.flag("--remote-model").ok_or("--endpoint needs --remote-model")?;
         let var = a.flag("--token-env").unwrap_or("CRAFT_AI_TOKEN");
         return Ok(remote(endpoint, model, var));
     }
-    let id = a.flag("--model").map_or_else(default_model, str::to_string);
+    let id = model.map_or_else(default_model, str::to_string);
     let template = match a.flag("--template") {
         Some(t) => {
             let stop: Vec<String> = a.flag("--stop").map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default();
@@ -234,7 +250,7 @@ fn provider(a: &Args) -> Result<Box<dyn Provider>, String> {
         None => None,
     };
     let device = |own: Option<craft_ai::DeviceChoice>| -> Result<craft_ai::DeviceChoice, String> {
-        if let Some(d) = a.flag("--device") {
+        if let Some(d) = device_flag {
             return d.parse();
         }
         if let Some(d) = own {
@@ -474,4 +490,55 @@ fn transcribe(a: &Args) -> Result<Value, String> {
         "model": t.id(), "device": t.device(), "language": tr.language, "seconds": samples.len() as f64 / 16_000.0,
         "text": tr.text(), "speakers": tr.speakers.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), "words": words,
     }))
+}
+
+fn live(a: &Args) -> Result<Value, String> {
+    use craft_ai::speech::live::{Langs, LiveOptions, Output, run};
+    let input = a.flag("--in").ok_or("live: --in URL, a device or a file")?;
+    let dir = a.dir()?;
+    let id = a
+        .flag("--model")
+        .map(str::to_string)
+        .or_else(|| std::env::var("CRAFT_AI_SPEECH_MODEL").ok().filter(|m| !m.is_empty()))
+        .unwrap_or_else(|| "whisper-small".into());
+    if !craft_ai::speech::known(&dir, &id) {
+        return Err(format!("unknown speech model {id:?} (see `models`)"));
+    }
+    let device = a.flag("--device").map(str::parse::<craft_ai::DeviceChoice>).transpose()?;
+    let speech = craft_ai::speech::load(&dir, &id, device).map_err(|e| e.to_string())?;
+    let language = a.flag("--language").map(str::to_string).filter(|l| !l.is_empty() && l != "auto");
+    let langs: Vec<String> =
+        a.flag("--translate").map(|l| l.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+    let mut translate: Vec<(String, Box<dyn Provider>)> = Vec::new();
+    for l in &langs {
+        translate.push((l.clone(), provider_with(a, a.flag("--translate-model"), a.flag("--translate-device"))?));
+    }
+    let specs = a.flags("--captions");
+    if specs.is_empty() {
+        return Err("live: give at least one --captions output (jsonl:- prints them)".into());
+    }
+    let spoken = language.clone().unwrap_or_else(|| "spoken".into());
+    let mut outputs = Vec::new();
+    for spec in specs {
+        if spec.contains("{lang}") {
+            // the spoken language's output: that language, or (detected) any but the translations'
+            let own = language.clone().map_or_else(|| Langs::Except(langs.clone()), Langs::Only);
+            for (name, takes) in std::iter::once((spoken.clone(), own)).chain(langs.iter().map(|l| (l.clone(), Langs::Only(l.clone())))) {
+                let sink = craft_live::CaptionSink::open(&spec.replace("{lang}", &name)).map_err(|e| format!("{spec}: {e}"))?;
+                outputs.push(Output { langs: takes, sink });
+            }
+        } else {
+            outputs.push(Output { langs: Langs::All, sink: craft_live::CaptionSink::open(spec).map_err(|e| format!("{spec}: {e}"))? });
+        }
+    }
+    let o = LiveOptions {
+        input: input.to_string(),
+        input_format: a.flag("--in-format").map(str::to_string),
+        seconds: a.num("--seconds")?.unwrap_or(0),
+        language,
+        pause: a.num("--pause")?.unwrap_or(0.6),
+        max_segment: a.num("--max-segment")?.unwrap_or(8.0),
+    };
+    let stats = run(&o, speech.as_ref(), &mut translate, &mut outputs, &mut std::io::stderr()).map_err(|e| e.to_string())?;
+    Ok(json!({ "model": speech.id(), "device": speech.device(), "stats": stats }))
 }
