@@ -29,7 +29,9 @@ craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segm
   <model>: --model ID [--dir DIR]   a local model from `models` (downloaded first)
        or: --endpoint URL --remote-model NAME [--token-env VAR]   any OpenAI-compatible API
   --segments-file: a JSON array of strings; the answer keeps their order and count, and
-  protected runs (URLs, e-mail addresses, {placeholders}, <markup>, numbers) come back unchanged.";
+  protected runs (URLs, e-mail addresses, {placeholders}, <markup>, numbers) come back unchanged.
+  Each text goes to the model whole, so sentences around a placeholder are translated as one; a
+  translation that loses or adds a protected run is redone split at them. --split always splits.";
 
 struct Args(Vec<String>);
 
@@ -182,18 +184,8 @@ fn translate(a: &Args) -> Result<Value, String> {
         }
         _ => return Err("translate: give --text, --file or --segments-file".into()),
     };
-    // Every input's segments in one list, so the model sees whole batches; each input's range
-    // puts its translation back together.
-    let mut all: Vec<Segment> = Vec::new();
-    let mut ranges = Vec::with_capacity(texts.len());
-    for t in &texts {
-        let start = all.len();
-        all.extend(segment(t, &PdfGrammar));
-        ranges.push(start..all.len());
-    }
     let mut p = provider(a)?;
-    let out = translate_segments(p.as_mut(), &all, to).map_err(|e| e.to_string())?;
-    let joined: Vec<String> = ranges.into_iter().map(|r| out[r].concat()).collect();
+    let joined = if a.0.iter().any(|x| x == "--split") { split_translate(p.as_mut(), &texts, to)? } else { whole_translate(p.as_mut(), &texts, to)? };
     let mut v = json!({ "provider": p.name(), "local": p.is_local(), "to": to });
     if list {
         v["segments"] = json!(joined);
@@ -201,4 +193,60 @@ fn translate(a: &Args) -> Result<Value, String> {
         v["text"] = json!(joined.into_iter().next().unwrap_or_default());
     }
     Ok(v)
+}
+
+/// Every input's segments in one list, so the model sees whole batches; each input's range puts
+/// its translation back together. Protected runs never reach the model.
+fn split_translate(p: &mut dyn Provider, texts: &[String], to: &str) -> Result<Vec<String>, String> {
+    let mut all: Vec<Segment> = Vec::new();
+    let mut ranges = Vec::with_capacity(texts.len());
+    for t in texts {
+        let start = all.len();
+        all.extend(segment(t, &PdfGrammar));
+        ranges.push(start..all.len());
+    }
+    let out = translate_segments(p, &all, to).map_err(|e| e.to_string())?;
+    Ok(ranges.into_iter().map(|r| out[r].concat()).collect())
+}
+
+/// Each input whole, so a sentence with a placeholder in it is translated as one sentence; the
+/// model is told to keep protected runs, and an input whose translation doesn't keep exactly the
+/// same ones (`protected_runs`) is redone split, where they can't change.
+fn whole_translate(p: &mut dyn Provider, texts: &[String], to: &str) -> Result<Vec<String>, String> {
+    let whole: Vec<Segment> = texts
+        .iter()
+        .map(|t| if protected_runs(t).len() == t.split_whitespace().count() { Segment::Protected(t.clone()) } else { Segment::Text(t.clone()) })
+        .collect();
+    let mut out = translate_segments(p, &whole, to).map_err(|e| e.to_string())?;
+    let redo: Vec<usize> = (0..texts.len()).filter(|&i| protected_runs(&texts[i]) != protected_runs(&out[i])).collect();
+    if !redo.is_empty() {
+        let again = split_translate(p, &redo.iter().map(|&i| texts[i].clone()).collect::<Vec<_>>(), to)?;
+        for (i, t) in redo.into_iter().zip(again) {
+            out[i] = t;
+        }
+    }
+    Ok(out)
+}
+
+/// The protected runs of `text`, sorted: whitespace-separated tokens the grammar protects (URLs,
+/// e-mail addresses, numbers…) and every `{…}` placeholder, also one inside a word.
+fn protected_runs(text: &str) -> Vec<String> {
+    let mut runs: Vec<String> = text
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| matches!(c, ',' | ';' | ':' | '!' | '?' | '(' | ')' | '"' | '\'')))
+        .filter(|t| !t.is_empty() && t.chars().any(char::is_alphanumeric) && craft_ai::is_protected_token(t) && !t.contains('{'))
+        .map(str::to_string)
+        .collect();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        match rest[open..].find('}') {
+            Some(close) => {
+                runs.push(rest[open..open + close + 1].to_string());
+                rest = &rest[open + close + 1..];
+            }
+            None => break,
+        }
+    }
+    runs.sort();
+    runs
 }
