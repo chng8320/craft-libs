@@ -30,10 +30,10 @@ rayon = { workspace = true }
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 # Speech to text with Whisper on candle (pure Rust), on the CPU or a GPU (with `cuda` or `metal`).
 speech = ["dep:candle-core", "dep:candle-nn"]
-# Local models on an NVIDIA GPU (needs the CUDA toolkit to build, the NVIDIA driver to run).
-cuda = ["local", "speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
-# Local models on an Apple GPU (macOS).
-metal = ["local", "speech", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+# GPUs for `local` and `speech`: NVIDIA (needs the CUDA toolkit to build, the NVIDIA driver to run).
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers?/cuda"]
+# ... and Apple GPUs (macOS).
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers?/metal"]
 
 [dev-dependencies]
 tempfile = "3"

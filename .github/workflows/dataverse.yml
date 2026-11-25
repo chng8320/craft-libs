@@ -95,7 +95,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build the AI command line with CUDA
-        run: cargo build --release -p craft-ai --features cuda --example craft-ai-cli
+        run: cargo build --release -p craft-ai --features local,speech,cuda --example craft-ai-cli
       - name: Name it for the Dataverse
         run: |
           mkdir -p out

@@ -1619,6 +1619,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "dirs",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.1",
