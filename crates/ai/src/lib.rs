@@ -9,11 +9,14 @@ mod device;
 mod error;
 mod provider;
 mod registry;
+pub mod tasks;
 mod template;
 mod translate;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod catalog;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ocr;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod speech;
 

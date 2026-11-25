@@ -25,6 +25,8 @@ candle-transformers = { version = "0.9", optional = true }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
 rayon = { workspace = true }
 craft-live = { workspace = true }
+craft-captions = { workspace = true }
+craft-xml = { workspace = true }
 
 [features]
 # Local GGUF inference on candle. Heavy dependency tree; apps opt in.

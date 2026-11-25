@@ -83,6 +83,40 @@ impl OpenAiCompat {
             .into()
     }
 
+    /// Embeddings of `texts` from the endpoint's `/embeddings` call, one vector per text, in order.
+    pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AiError> {
+        if self.endpoint.trim().is_empty() {
+            return Err(AiError::NotConfigured);
+        }
+        let body = serde_json::json!({ "model": self.model, "input": texts });
+        let mut resp = self.auth(Self::agent().post(self.url("embeddings"))).header("Content-Type", "application/json").send_json(body).map_err(
+            |e| match e {
+                ureq::Error::StatusCode(401 | 403) => AiError::Rejected("authentication failed — check the API token".into()),
+                ureq::Error::StatusCode(c) => AiError::Rejected(format!("HTTP {c}")),
+                other => AiError::Http(other.to_string()),
+            },
+        )?;
+        let v: serde_json::Value = resp.body_mut().read_json().map_err(|e| AiError::BadResponse(e.to_string()))?;
+        let mut data: Vec<(usize, Vec<f32>)> = v["data"]
+            .as_array()
+            .ok_or_else(|| AiError::BadResponse("no data[] in the embeddings answer".into()))?
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let at = d["index"].as_u64().map_or(i, |n| n as usize);
+                (
+                    at,
+                    d["embedding"].as_array().map(|e| e.iter().filter_map(serde_json::Value::as_f64).map(|x| x as f32).collect()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        data.sort_by_key(|(i, _)| *i);
+        if data.len() != texts.len() {
+            return Err(AiError::BadResponse(format!("{} embeddings for {} texts", data.len(), texts.len())));
+        }
+        Ok(data.into_iter().map(|(_, e)| e).collect())
+    }
+
     fn auth(&self, req: ureq::RequestBuilder<ureq::typestate::WithBody>) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         match &self.token {
             Some(t) if !t.is_empty() => req.header("Authorization", format!("Bearer {t}")),

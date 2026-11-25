@@ -51,6 +51,15 @@ craft-ai-cli live --in URL|DEVICE|FILE [--in-format F] [--model SPEECH] [--devic
   live captions as they are spoken: each pause ends a caption, which is translated into each language.
   --captions (repeatable): vtt:PATH, srt:PATH, jsonl:PATH (jsonl:- standard output) or an http(s) webhook;
   {lang} in it makes one output per language (the spoken one and each translation)
+craft-ai-cli summarize <model> (--text T | --file F) [--length short|medium|bullets] [--language L]
+craft-ai-cli extract   <model> (--text T | --file F) --fields a,b,c [--instructions TEXT]
+craft-ai-cli chat      <model> --messages FILE.json   (a JSON list of {role: system, user or assistant; content})
+craft-ai-cli ask       <model> (--text T | --file F) --question Q
+craft-ai-cli detect-language (--text T | --file F) [<model>]   (without a model: by script and common words)
+craft-ai-cli translate-subtitles <model> --file IN --to L --out OUT   (SRT, WebVTT, TTML, SCC…; times kept)
+craft-ai-cli translate-xliff     <model> --file IN [--to L] [--overwrite] --out OUT   (inline codes kept)
+craft-ai-cli embed     <model> (--text T | --texts-file FILE.json)   (an endpoint model: OpenAI-compatible /embeddings)
+craft-ai-cli ocr       --file IMAGE [--languages vie+eng]   (Tesseract on the CPU; words with boxes)
 craft-ai-cli complete  <model> (--prompt TEXT | --prompt-file FILE) [--max-tokens N] [--temperature T]
 craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segments-file FILE.json)
   <model>: [--model ID] [--dir DIR] [--catalog FILE] [--device D] [--template T [--stop A,B]]
@@ -101,6 +110,15 @@ fn main() -> ExitCode {
         Some("translate") => translate(&args),
         Some("transcribe") => transcribe(&args),
         Some("live") => live(&args),
+        Some("summarize") => summarize(&args),
+        Some("extract") => extract(&args),
+        Some("chat") => chat(&args),
+        Some("ask") => ask(&args),
+        Some("detect-language") => detect_language(&args),
+        Some("translate-subtitles") => translate_subtitles(&args),
+        Some("translate-xliff") => translate_xliff(&args),
+        Some("embed") => embed(&args),
+        Some("ocr") => ocr(&args),
         Some("help" | "--help" | "-h") | None => {
             println!("{HELP}");
             return ExitCode::SUCCESS;
@@ -556,8 +574,134 @@ fn commands() -> Value {
         json!({ "id": "download", "label": "Download a model", "task": "all", "inputs": [p("<id>", "string", "a downloadable model")] }),
         json!({ "id": "complete", "label": "Complete a prompt", "task": "chat", "inputs": [model.clone(), device.clone(), p("--prompt", "string", "the prompt"), p("--prompt-file", "string", "or a file holding it"), p("--max-tokens", "integer", ""), p("--temperature", "number", ""), p("--endpoint", "string", "an OpenAI-compatible API"), p("--remote-model", "string", "its model name")] }),
         json!({ "id": "translate", "label": "Translate", "task": "chat", "inputs": [model.clone(), device.clone(), p("--to", "string", "the language"), p("--text", "string", ""), p("--file", "string", ""), p("--segments-file", "string", "a JSON array of strings"), p("--split", "boolean", "")] }),
+        json!({ "id": "summarize", "label": "Summarize", "task": "chat", "inputs": [model.clone(), device.clone(), p("--text", "string", ""), p("--file", "string", ""), p("--length", "string", "short, medium or bullets"), p("--language", "string", "")] }),
+        json!({ "id": "extract", "label": "Extract fields", "task": "chat", "inputs": [model.clone(), device.clone(), p("--text", "string", ""), p("--file", "string", ""), p("--fields", "string", "comma-separated"), p("--instructions", "string", "")] }),
+        json!({ "id": "chat", "label": "Chat", "task": "chat", "inputs": [model.clone(), device.clone(), p("--messages", "string", "a JSON file of {role, content}"), p("--max-tokens", "integer", ""), p("--temperature", "number", "")] }),
+        json!({ "id": "ask", "label": "Ask a document", "task": "chat", "inputs": [model.clone(), device.clone(), p("--text", "string", ""), p("--file", "string", ""), p("--question", "string", "")] }),
+        json!({ "id": "detect-language", "label": "Detect the language", "task": "chat", "inputs": [p("--text", "string", ""), p("--file", "string", ""), p("--model", "string", "optional: ask a model")] }),
+        json!({ "id": "translate-subtitles", "label": "Translate subtitles", "task": "chat", "inputs": [model.clone(), device.clone(), p("--file", "string", "SRT, WebVTT, TTML, SCC…"), p("--to", "string", ""), p("--out", "string", "")] }),
+        json!({ "id": "translate-xliff", "label": "Translate XLIFF", "task": "chat", "inputs": [model.clone(), device.clone(), p("--file", "string", ""), p("--to", "string", ""), p("--overwrite", "boolean", ""), p("--out", "string", "")] }),
+        json!({ "id": "embed", "label": "Embeddings", "task": "embeddings", "inputs": [p("--model", "string", "an endpoint model"), p("--text", "string", ""), p("--texts-file", "string", "a JSON array of strings")] }),
+        json!({ "id": "ocr", "label": "Read text from an image", "task": "ocr", "inputs": [p("--file", "string", "an image"), p("--languages", "string", "Tesseract codes, e.g. vie+eng")] }),
         json!({ "id": "transcribe", "label": "Transcribe speech", "task": "speech-to-text", "inputs": [model.clone(), device.clone(), p("--file", "string", "audio or video"), p("--language", "string", "a code, or auto"), p("--speakers", "integer", "label up to this many speakers")] }),
         json!({ "id": "live", "label": "Live captions and translation", "task": "speech-to-text", "inputs": [p("--in", "string", "a URL, a device or a file"), p("--in-format", "string", ""), model, device, p("--language", "string", ""), p("--translate", "string", "languages, comma-separated"), p("--translate-model", "string", ""), p("--translate-device", "string", ""), p("--captions", "string", "vtt:PATH, srt:PATH, jsonl:PATH or a webhook; repeatable; {lang}"), p("--pause", "number", ""), p("--max-segment", "number", ""), p("--seconds", "integer", "")] }),
     ];
     json!({ "program": "craft-ai-cli", "commands": list })
+}
+
+/// The text a task works on: --text, or --file read as UTF-8.
+fn input_text(a: &Args) -> Result<String, String> {
+    match (a.flag("--text"), a.flag("--file")) {
+        (Some(t), _) => Ok(t.to_string()),
+        (None, Some(f)) => read(f),
+        _ => Err("give --text or --file".into()),
+    }
+}
+
+fn summarize(a: &Args) -> Result<Value, String> {
+    let text = input_text(a)?;
+    let length: craft_ai::tasks::Length = a.flag("--length").unwrap_or("medium").parse()?;
+    let mut p = provider(a)?;
+    let (summary, cut) = craft_ai::tasks::summarize(p.as_mut(), &text, length, a.flag("--language").unwrap_or("")).map_err(|e| e.to_string())?;
+    Ok(json!({ "summary": summary, "truncated": cut, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn extract(a: &Args) -> Result<Value, String> {
+    let text = input_text(a)?;
+    let fields: Vec<String> =
+        a.flag("--fields").ok_or("extract: --fields a,b,c")?.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+    let mut p = provider(a)?;
+    let v = craft_ai::tasks::extract(p.as_mut(), &text, &fields, a.flag("--instructions").unwrap_or("")).map_err(|e| e.to_string())?;
+    Ok(json!({ "values": v, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn chat(a: &Args) -> Result<Value, String> {
+    let f = a.flag("--messages").ok_or("chat: --messages FILE.json")?;
+    let messages: Vec<craft_ai::tasks::Message> = serde_json::from_str(&read(f)?).map_err(|e| format!("{f}: [{{\"role\", \"content\"}}, …]: {e}"))?;
+    let o = opts(a)?;
+    let mut p = provider(a)?;
+    let answer = craft_ai::tasks::chat(p.as_mut(), &messages, &o).map_err(|e| e.to_string())?;
+    Ok(json!({ "answer": answer, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn ask(a: &Args) -> Result<Value, String> {
+    let text = input_text(a)?;
+    let q = a.flag("--question").ok_or("ask: --question Q")?;
+    let mut p = provider(a)?;
+    let (answer, used) = craft_ai::tasks::ask(p.as_mut(), &text, q).map_err(|e| e.to_string())?;
+    Ok(json!({ "answer": answer, "extracts": used, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn detect_language(a: &Args) -> Result<Value, String> {
+    let text = input_text(a)?;
+    if a.flag("--model").is_some() || a.flag("--endpoint").is_some() {
+        let mut p = provider(a)?;
+        let code = craft_ai::tasks::detect_language_with(p.as_mut(), &text).map_err(|e| e.to_string())?;
+        return Ok(json!({ "language": code, "by": p.name() }));
+    }
+    Ok(match craft_ai::tasks::detect_language(&text) {
+        Some((code, c)) => json!({ "language": code, "confidence": c, "by": "script and common words" }),
+        None => json!({ "language": null, "by": "script and common words", "note": "too little text to tell; give --model to ask a model" }),
+    })
+}
+
+fn translate_subtitles(a: &Args) -> Result<Value, String> {
+    let f = a.flag("--file").ok_or("translate-subtitles: --file IN")?;
+    let to = a.flag("--to").ok_or("translate-subtitles: --to LANGUAGE")?;
+    let out = a.flag("--out").ok_or("translate-subtitles: --out OUT")?;
+    let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
+    let ext = std::path::Path::new(f).extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+    let mut p = provider(a)?;
+    let (data, n) = craft_ai::tasks::translate_captions(p.as_mut(), &bytes, ext.as_deref(), to).map_err(|e| e.to_string())?;
+    std::fs::write(out, data).map_err(|e| format!("{out}: {e}"))?;
+    Ok(json!({ "cues": n, "to": to, "out": out, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn translate_xliff(a: &Args) -> Result<Value, String> {
+    let f = a.flag("--file").ok_or("translate-xliff: --file IN")?;
+    let out = a.flag("--out").ok_or("translate-xliff: --out OUT")?;
+    let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
+    let mut p = provider(a)?;
+    let (data, st) = craft_ai::tasks::translate_xliff(p.as_mut(), &bytes, a.flag("--to").unwrap_or(""), a.0.iter().any(|x| x == "--overwrite"))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(out, data).map_err(|e| format!("{out}: {e}"))?;
+    Ok(json!({ "stats": st, "out": out, "provider": p.name(), "local": p.is_local() }))
+}
+
+fn embed(a: &Args) -> Result<Value, String> {
+    let texts: Vec<String> = match (a.flag("--text"), a.flag("--texts-file")) {
+        (Some(t), _) => vec![t.to_string()],
+        (None, Some(f)) => serde_json::from_str(&read(f)?).map_err(|e| format!("{f}: a JSON array of strings: {e}"))?,
+        _ => return Err("embed: --text or --texts-file".into()),
+    };
+    let (endpoint, model, token_env) = match a.flag("--endpoint") {
+        Some(e) => (
+            e.to_string(),
+            a.flag("--remote-model").ok_or("--endpoint needs --remote-model")?.to_string(),
+            a.flag("--token-env").unwrap_or("CRAFT_AI_TOKEN").to_string(),
+        ),
+        None => {
+            let id = a.flag("--model").ok_or("embed: --model (an endpoint model of the catalogue) or --endpoint")?;
+            let dir = a.dir()?;
+            let cat = catalog(a, &dir)?;
+            match cat.find(id).map(|m| &m.source) {
+                Some(craft_ai::catalog::Source::Endpoint { endpoint, model, token_env }) => (endpoint.clone(), model.clone(), token_env.clone()),
+                Some(_) => return Err(format!("{id} runs here, and local embedding models aren't supported yet: use an endpoint model")),
+                None => return Err(format!("unknown model {id:?} (see `models`)")),
+            }
+        }
+    };
+    let token = std::env::var(&token_env).ok().filter(|t| !t.is_empty());
+    let p = craft_ai::OpenAiCompat::new(endpoint, token, model);
+    let v = p.embed(&texts).map_err(|e| e.to_string())?;
+    Ok(json!({ "model": p.model, "dimensions": v.first().map_or(0, Vec::len), "embeddings": v }))
+}
+
+fn ocr(a: &Args) -> Result<Value, String> {
+    let f = a.flag("--file").ok_or("ocr: --file IMAGE")?;
+    if a.flag("--model").is_some() {
+        return Err("ocr runs on Tesseract for now; OCR and vision models through --model are not supported yet".into());
+    }
+    let r = craft_ai::ocr::ocr(std::path::Path::new(f), a.flag("--languages").unwrap_or("eng")).map_err(|e| e.to_string())?;
+    serde_json::to_value(r).map_err(|e| e.to_string())
 }

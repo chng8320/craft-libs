@@ -62,3 +62,12 @@ and `models` cover speech models too.
 reads the stream, pauses cut it into utterances, each is transcribed with any speech model and translated with any
 chat model (each on its own device), and the captions go to WebVTT, SRT, JSON lines or a webhook, one output per
 language with `{lang}`. Times are the stream's.
+
+## More AI commands (craft_ai::tasks, craft_ai::ocr)
+
+`summarize`, `extract` (fields to JSON, asked again when the answer isn't JSON), `chat`, `ask` (questions about a
+document: the pieces that share the question's words go to the model, which names the ones it used),
+`detect-language` (by script and common words, or `--model`), `translate-subtitles` (every format craft-captions
+reads, times and tags kept), `translate-xliff` (craft-xml; inline codes back exactly), `embed` (endpoint models)
+and `ocr` (Tesseract, words with boxes). With `models`, `devices`, `download`, `complete`, `translate`,
+`transcribe` and `live`: 16. `craft-ai-cli commands` lists them with their inputs.
