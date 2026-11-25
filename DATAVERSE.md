@@ -25,4 +25,5 @@ from ArtCraft, replays our commits on `dataverse` (opening an issue when one no 
 
 | Commit | What | Offered upstream? |
 |---|---|---|
+| craft-live | `crates/live`: live input and output through FFmpeg (RTMP, SRT, RTSP, HLS, devices, files) as raw frames or samples, control lines from a FIFO, file or TCP port, captions to WebVTT, SRT, JSON lines or a webhook; used by the engines' `live` commands | not yet |
 | craft-ai-cli | `crates/ai/examples/craft-ai-cli.rs`: models, download, complete and translate (text or segments) from the command line, local or any OpenAI-compatible endpoint, JSON out | not yet |

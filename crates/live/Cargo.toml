@@ -1,0 +1,17 @@
+[package]
+name = "craft-live"
+description = "Live media for the engines' live modes: FFmpeg reads a live input (RTMP, SRT, RTSP, HLS, a device or a file) into raw video frames or audio samples and encodes the processed ones to a live output; control messages arrive while it runs (a FIFO, a file or a TCP port); captions go out as WebVTT, SRT, JSON lines or a webhook."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { version = "3" }
+
+[lints]
+workspace = true

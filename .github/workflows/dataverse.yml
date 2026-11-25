@@ -64,7 +64,7 @@ jobs:
       - name: Build the AI command line (craft-ai with local models)
         run: cargo build --release -p craft-ai --features local --example craft-ai-cli
       - name: Test craft-ai
-        run: cargo test --release -p craft-ai --features local
+        run: cargo test --release -p craft-ai --features local && cargo test --release -p craft-live
       - name: Name it for the Dataverse
         run: |
           mkdir -p out

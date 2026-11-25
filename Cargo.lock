@@ -2568,6 +2568,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-live"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "craft-lottie"
 version = "0.1.0"
 dependencies = [
