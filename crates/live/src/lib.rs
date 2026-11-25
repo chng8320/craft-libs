@@ -14,7 +14,6 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
 
 use serde::Serialize;
 
@@ -337,17 +336,32 @@ pub struct Caption {
 /// Where captions go: `vtt:PATH`, `srt:PATH`, `jsonl:PATH` (`jsonl:-` standard output), or an
 /// `http(s)://` webhook (each caption POSTed as JSON). Only final captions go to files.
 pub enum CaptionSink {
-    Vtt { file: std::fs::File },
-    Srt { file: std::fs::File, n: usize },
-    Jsonl { out: Box<dyn Write + Send> },
-    Webhook { url: String, agent: ureq::Agent },
+    Vtt {
+        file: std::fs::File,
+    },
+    Srt {
+        file: std::fs::File,
+        n: usize,
+    },
+    Jsonl {
+        out: Box<dyn Write + Send>,
+    },
+    #[cfg(feature = "webhook")]
+    Webhook {
+        url: String,
+        agent: ureq::Agent,
+    },
 }
 
 impl CaptionSink {
     pub fn open(spec: &str) -> io::Result<CaptionSink> {
         let create = |p: &str| std::fs::File::create(p);
         if spec.starts_with("http://") || spec.starts_with("https://") {
-            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(10))).build().into();
+            #[cfg(not(feature = "webhook"))]
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "caption webhooks need craft-live's `webhook` feature"));
+            #[cfg(feature = "webhook")]
+            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(10))).build().into();
+            #[cfg(feature = "webhook")]
             return Ok(CaptionSink::Webhook { url: spec.to_string(), agent });
         }
         let (kind, path) = spec.split_once(':').unwrap_or(("jsonl", spec));
@@ -383,6 +397,7 @@ impl CaptionSink {
                 writeln!(out, "{}", serde_json::to_string(c).map_err(io::Error::other)?)?;
                 out.flush()
             }
+            #[cfg(feature = "webhook")]
             CaptionSink::Webhook { url, agent } => {
                 let body = serde_json::to_vec(c).map_err(io::Error::other)?;
                 match agent.post(url.as_str()).header("Content-Type", "application/json").send(&body[..]) {

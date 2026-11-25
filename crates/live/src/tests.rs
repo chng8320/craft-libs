@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 fn video() -> Raw {
     Raw::Video { width: 64, height: 36, fps: 25.0 }
