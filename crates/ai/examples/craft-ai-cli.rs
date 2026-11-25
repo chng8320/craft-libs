@@ -38,6 +38,7 @@ use serde_json::{Value, json};
 
 const HELP: &str = "\
 craft-ai-cli models   [--dir DIR] [--catalog FILE]
+craft-ai-cli commands   (every command with its inputs, as JSON: the same listing every engine gives)
 craft-ai-cli devices
 craft-ai-cli transcribe --file AUDIO [--model whisper-small] [--device D] [--language vi|auto] [--speakers N]
   any audio or video FFmpeg reads (raw mono 16 kHz f32 when it ends in .f32); --model is a built-in Whisper
@@ -94,6 +95,7 @@ fn main() -> ExitCode {
     let result = match args.0.first().map(String::as_str) {
         Some("models") => models(&args),
         Some("devices") => devices(),
+        Some("commands") => Ok(commands()),
         Some("download") => download(&args),
         Some("complete") => complete(&args),
         Some("translate") => translate(&args),
@@ -541,4 +543,21 @@ fn live(a: &Args) -> Result<Value, String> {
     };
     let stats = run(&o, speech.as_ref(), &mut translate, &mut outputs, &mut std::io::stderr()).map_err(|e| e.to_string())?;
     Ok(json!({ "model": speech.id(), "device": speech.device(), "stats": stats }))
+}
+
+/// Every command with its inputs, in the form the engines' `commands` use.
+fn commands() -> Value {
+    let p = |name: &str, kind: &str, about: &str| json!({ "name": name, "type": kind, "description": about });
+    let model = p("--model", "string", "a model of the catalogue (`models`), or a .gguf file");
+    let device = p("--device", "string", "auto, cpu, gpu, cuda, cuda:N, metal, metal:N");
+    let list = vec![
+        json!({ "id": "models", "label": "List models", "task": "all", "inputs": [p("--dir", "string", "the model folder"), p("--catalog", "string", "another catalogue file")] }),
+        json!({ "id": "devices", "label": "List devices", "task": "all", "inputs": [] }),
+        json!({ "id": "download", "label": "Download a model", "task": "all", "inputs": [p("<id>", "string", "a downloadable model")] }),
+        json!({ "id": "complete", "label": "Complete a prompt", "task": "chat", "inputs": [model.clone(), device.clone(), p("--prompt", "string", "the prompt"), p("--prompt-file", "string", "or a file holding it"), p("--max-tokens", "integer", ""), p("--temperature", "number", ""), p("--endpoint", "string", "an OpenAI-compatible API"), p("--remote-model", "string", "its model name")] }),
+        json!({ "id": "translate", "label": "Translate", "task": "chat", "inputs": [model.clone(), device.clone(), p("--to", "string", "the language"), p("--text", "string", ""), p("--file", "string", ""), p("--segments-file", "string", "a JSON array of strings"), p("--split", "boolean", "")] }),
+        json!({ "id": "transcribe", "label": "Transcribe speech", "task": "speech-to-text", "inputs": [model.clone(), device.clone(), p("--file", "string", "audio or video"), p("--language", "string", "a code, or auto"), p("--speakers", "integer", "label up to this many speakers")] }),
+        json!({ "id": "live", "label": "Live captions and translation", "task": "speech-to-text", "inputs": [p("--in", "string", "a URL, a device or a file"), p("--in-format", "string", ""), model, device, p("--language", "string", ""), p("--translate", "string", "languages, comma-separated"), p("--translate-model", "string", ""), p("--translate-device", "string", ""), p("--captions", "string", "vtt:PATH, srt:PATH, jsonl:PATH or a webhook; repeatable; {lang}"), p("--pause", "number", ""), p("--max-segment", "number", ""), p("--seconds", "integer", "")] }),
+    ];
+    json!({ "program": "craft-ai-cli", "commands": list })
 }
