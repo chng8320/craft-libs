@@ -26,7 +26,10 @@ pub enum Quality {
 pub enum Arch {
     Qwen2,
     Qwen3,
+    /// Llama and the models built like it: SmolLM2, Mistral, many fine-tunes.
     Llama,
+    Gemma3,
+    Phi3,
 }
 
 impl Arch {
@@ -37,7 +40,22 @@ impl Arch {
             "qwen2" => Some(Self::Qwen2),
             "qwen3" => Some(Self::Qwen3),
             "llama" => Some(Self::Llama),
+            "gemma3" => Some(Self::Gemma3),
+            "phi3" => Some(Self::Phi3),
             _ => None,
+        }
+    }
+
+    /// The names [`Self::from_gguf_name`] takes, for messages.
+    pub const NAMES: &'static str = "qwen2, qwen3, llama, gemma3, phi3";
+
+    /// The prompt format to use when neither the catalogue nor the file says.
+    pub fn default_template(self) -> crate::Template {
+        match self {
+            Self::Qwen3 => crate::Template::Qwen3,
+            Self::Gemma3 => crate::Template::Gemma,
+            Self::Phi3 => crate::Template::Phi3,
+            Self::Qwen2 | Self::Llama => crate::Template::ChatMl,
         }
     }
 }

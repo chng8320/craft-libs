@@ -35,3 +35,13 @@ qwen2, qwen3 or llama architecture) and `--device` (`auto`, `cpu`, `gpu`, `cuda[
 `craft-ai-cli devices` lists the back ends the build has and the GPUs it can open. CI builds two
 command lines: `dataverse-ai-cli-linux-x86_64` (CPU) and `dataverse-ai-cli-linux-x86_64-cuda`
 (NVIDIA GPUs, CPU too).
+
+## The model catalogue (any model, one interface)
+
+`craft_ai::catalog` adds models from JSON files (`<model folder>/catalog.json`, `CRAFT_AI_CATALOG`,
+`--catalog`) to the built-in list. Each entry is one id whichever way it runs: `url` (downloaded),
+`path` (a GGUF on disk) or `endpoint` (any OpenAI-compatible server), with optional `arch`,
+`template` (`chatml`, `qwen3`, `llama3`, `gemma`, `phi3`, `mistral`, or a text with `{system}` and
+`{prompt}` plus `stop`) and `device`. Entries carry a `task`; craft-ai reads `chat` (the default) and
+leaves other tasks (`speech-to-text`, …) to their engines, so one file serves all of them. Local
+architectures: qwen2, qwen3, llama (and Llama-built models such as Mistral and SmolLM2), gemma3, phi3.

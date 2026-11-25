@@ -22,22 +22,31 @@
 //! Models live in `--dir`, else `CRAFT_AI_MODELS`, else the suite's shared cache. A token for an
 //! endpoint is read from the environment variable `--token-env` names (default
 //! `CRAFT_AI_TOKEN`), never from the command line, so it doesn't show in process lists.
+//!
+//! The model catalogue is the built-in models plus `<model folder>/catalog.json`, the files in
+//! `CRAFT_AI_CATALOG` and `--catalog FILE` (see `craft_ai::catalog`): a model there is one id
+//! whether it is downloaded, a file on disk or an OpenAI-compatible endpoint. Without `--model`,
+//! `CRAFT_AI_DEFAULT_MODEL` (else qwen3-4b-q4km); without `--device`, the model's catalogue
+//! device, else `CRAFT_AI_DEVICE`, else auto.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use craft_ai::{GenOpts, MODELS, PdfGrammar, Provider, Segment, by_id, fits, segment, suggest, translate_segments};
+use craft_ai::{GenOpts, PdfGrammar, Provider, Segment, fits, segment, suggest, translate_segments};
 use serde_json::{Value, json};
 
 const HELP: &str = "\
-craft-ai-cli models   [--dir DIR]
+craft-ai-cli models   [--dir DIR] [--catalog FILE]
 craft-ai-cli devices
-craft-ai-cli download <model id> [--dir DIR]
+craft-ai-cli download <model id> [--dir DIR] [--catalog FILE]
 craft-ai-cli complete  <model> (--prompt TEXT | --prompt-file FILE) [--max-tokens N] [--temperature T]
 craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segments-file FILE.json)
-  <model>: --model ID [--dir DIR] [--device D]   a local model from `models` (downloaded first)
-       or: --model FILE.gguf [--tokenizer FILE] [--device D]   any ChatML GGUF of a qwen2, qwen3 or
-           llama architecture (the tokenizer defaults to tokenizer.json beside it)
+  <model>: [--model ID] [--dir DIR] [--catalog FILE] [--device D] [--template T [--stop A,B]]
+           a model from `models`: built in, or from a catalogue (downloaded, a file, or an endpoint)
+       or: --model FILE.gguf [--tokenizer FILE]   any GGUF of a qwen2, qwen3, llama, gemma3 or phi3
+           architecture (the tokenizer defaults to tokenizer.json beside it)
+  --template: chatml, qwen3, llama3, gemma, phi3, mistral, or a text with {system} and {prompt}
+           (then --stop names the end tokens); default: the catalogue's, else the file's own
        or: --endpoint URL --remote-model NAME [--token-env VAR]   any OpenAI-compatible API
   --segments-file: a JSON array of strings; the answer keeps their order and count, and
   protected runs (URLs, e-mail addresses, {placeholders}, <markup>, numbers) come back unchanged.
@@ -91,26 +100,66 @@ fn main() -> ExitCode {
     }
 }
 
+fn catalog(a: &Args, dir: &std::path::Path) -> Result<craft_ai::catalog::Catalog, String> {
+    let mut files = craft_ai::catalog::default_files(dir);
+    if let Some(f) = a.flag("--catalog") {
+        files.push(PathBuf::from(f));
+    }
+    craft_ai::catalog::Catalog::load(&files).map_err(|e| e.to_string())
+}
+
 fn models(a: &Args) -> Result<Value, String> {
+    use craft_ai::catalog::Source;
     let dir = a.dir()?;
     let caps = craft_ai::probe::probe(&dir);
     let suggested = suggest(&caps).map(|m| m.id);
-    let list: Vec<Value> = MODELS
+    let cat = catalog(a, &dir)?;
+    let list: Vec<Value> = cat
+        .models
         .iter()
         .map(|m| {
-            json!({
-                "id": m.id, "name": m.name, "size_mb": m.size_mb, "min_ram_gb": m.min_ram_gb, "rec_ram_gb": m.rec_ram_gb,
-                "license": m.license, "languages": m.langs, "quality": format!("{:?}", m.quality),
-                "arch": format!("{:?}", m.arch).to_lowercase(), "downloaded": craft_ai::fetch::is_downloaded(m, &dir), "fits": fits(&caps, m), "suggested": suggested == Some(m.id),
-            })
+            let mut v = json!({
+                "id": m.id, "name": m.name, "kind": m.kind(), "from": m.origin,
+                "arch": m.arch.map(|x| format!("{x:?}").to_lowercase()), "template": m.template.as_ref().map(ToString::to_string),
+                "device": m.device.map(|d| d.to_string()),
+            });
+            match &m.source {
+                Source::Download(e) => {
+                    v["size_mb"] = json!(e.size_mb);
+                    v["min_ram_gb"] = json!(e.min_ram_gb);
+                    v["rec_ram_gb"] = json!(e.rec_ram_gb);
+                    v["license"] = json!(e.license);
+                    v["languages"] = json!(e.langs);
+                    v["quality"] = json!(format!("{:?}", e.quality));
+                    v["downloaded"] = json!(craft_ai::fetch::is_downloaded(e, &dir));
+                    v["fits"] = json!(fits(&caps, e));
+                    v["suggested"] = json!(suggested == Some(e.id));
+                }
+                Source::File { gguf, tokenizer } => {
+                    v["path"] = json!(gguf);
+                    v["tokenizer"] = json!(tokenizer);
+                    v["present"] = json!(gguf.is_file() && tokenizer.is_file());
+                }
+                Source::Endpoint { endpoint, model, token_env } => {
+                    v["endpoint"] = json!(endpoint);
+                    v["remote_model"] = json!(model);
+                    v["token_env"] = json!(token_env);
+                }
+            }
+            v
         })
         .collect();
     Ok(json!({
         "dir": dir,
         "machine": { "ram_gb": caps.ram_gb, "threads": caps.threads, "avx2": caps.avx2, "disk_free_gb": caps.disk_free_gb },
         "backends": craft_ai::compiled_backends(),
+        "default_model": default_model(),
         "models": list,
     }))
+}
+
+fn default_model() -> String {
+    std::env::var("CRAFT_AI_DEFAULT_MODEL").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| "qwen3-4b-q4km".into())
 }
 
 /// The back ends this build has and the GPUs it can open here.
@@ -132,8 +181,12 @@ fn found_gpus() -> Vec<(String, String)> {
 
 fn download(a: &Args) -> Result<Value, String> {
     let id = a.0.get(1).filter(|s| !s.starts_with("--")).ok_or("download: which model? (see `models`)")?;
-    let entry = by_id(id).ok_or_else(|| format!("unknown model {id:?} (see `models`)"))?;
     let dir = a.dir()?;
+    let cat = catalog(a, &dir)?;
+    let m = cat.find(id).ok_or_else(|| format!("unknown model {id:?} (see `models`)"))?;
+    let craft_ai::catalog::Source::Download(entry) = m.source else {
+        return Err(format!("{id} is a {} model: nothing to download", m.kind()));
+    };
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let verified = std::cell::Cell::new(false);
     let path = craft_ai::fetch::download(
@@ -151,41 +204,87 @@ fn download(a: &Args) -> Result<Value, String> {
     Ok(json!({ "model": entry.id, "path": path, "tokenizer": tokenizer, "verified": verified.get() }))
 }
 
-/// The provider the arguments name: a remote endpoint, or a downloaded local model.
+/// The provider the arguments name: a remote endpoint, or a model from the catalogue (which may
+/// itself be an endpoint), or a GGUF file.
 fn provider(a: &Args) -> Result<Box<dyn Provider>, String> {
+    use craft_ai::catalog::Source;
     if let Some(endpoint) = a.flag("--endpoint") {
         let model = a.flag("--remote-model").ok_or("--endpoint needs --remote-model")?;
         let var = a.flag("--token-env").unwrap_or("CRAFT_AI_TOKEN");
-        let token = std::env::var(var).ok().filter(|t| !t.is_empty());
-        return Ok(Box::new(craft_ai::OpenAiCompat::new(endpoint, token, model)));
+        return Ok(remote(endpoint, model, var));
     }
-    let id = a.flag("--model").ok_or("say which model: --model ID, or --endpoint URL --remote-model NAME")?;
-    let device: craft_ai::DeviceChoice = a.flag("--device").unwrap_or("auto").parse()?;
-    local(id, a, device)
+    let id = a.flag("--model").map_or_else(default_model, str::to_string);
+    let template = match a.flag("--template") {
+        Some(t) => {
+            let stop: Vec<String> = a.flag("--stop").map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default();
+            Some(craft_ai::Template::from_parts(t, &stop)?)
+        }
+        None => None,
+    };
+    let device = |own: Option<craft_ai::DeviceChoice>| -> Result<craft_ai::DeviceChoice, String> {
+        if let Some(d) = a.flag("--device") {
+            return d.parse();
+        }
+        if let Some(d) = own {
+            return Ok(d);
+        }
+        std::env::var("CRAFT_AI_DEVICE").ok().filter(|d| !d.is_empty()).map_or(Ok(craft_ai::DeviceChoice::Auto), |d| d.parse())
+    };
+    let dir = a.dir()?;
+    let cat = catalog(a, &dir)?;
+    if let Some(m) = cat.find(&id) {
+        let template = template.or_else(|| m.template.clone());
+        return match &m.source {
+            Source::Endpoint { endpoint, model, token_env } => Ok(remote(endpoint, model, token_env)),
+            Source::Download(e) => {
+                if !craft_ai::fetch::is_downloaded(e, &dir) {
+                    return Err(format!("{id} is not downloaded in {} (craft-ai-cli download {id})", dir.display()));
+                }
+                let (gguf, tok) = (craft_ai::fetch::model_path(e, &dir), craft_ai::fetch::tokenizer_path(e, &dir));
+                local(&m.id, &m.name, &gguf, &tok, m.arch, template, device(m.device)?)
+            }
+            Source::File { gguf, tokenizer } => local(&m.id, &m.name, gguf, tokenizer, m.arch, template, device(m.device)?),
+        };
+    }
+    let path = std::path::Path::new(&id);
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) {
+        let tokenizer = a.flag("--tokenizer").map_or_else(|| path.with_file_name("tokenizer.json"), PathBuf::from);
+        let name = path.file_stem().map_or_else(|| id.clone(), |s| s.to_string_lossy().into_owned());
+        return local(&id, &name, path, &tokenizer, None, template, device(None)?);
+    }
+    Err(format!("unknown model {id:?} (see `models`, add it to a catalogue, or give a .gguf file)"))
+}
+
+fn remote(endpoint: &str, model: &str, token_env: &str) -> Box<dyn Provider> {
+    let token = std::env::var(token_env).ok().filter(|t| !t.is_empty());
+    Box::new(craft_ai::OpenAiCompat::new(endpoint, token, model))
 }
 
 #[cfg(feature = "local")]
-fn local(id: &str, a: &Args, device: craft_ai::DeviceChoice) -> Result<Box<dyn Provider>, String> {
-    let path = std::path::Path::new(id);
-    if by_id(id).is_none() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) {
-        let tokenizer = a.flag("--tokenizer").map_or_else(|| path.with_file_name("tokenizer.json"), PathBuf::from);
-        let model = craft_ai::local::LocalGguf::load_file(path, &tokenizer, device).map_err(|e| e.to_string())?;
-        return Ok(Box::new(model));
-    }
-    let dir = a.dir()?;
-    let entry = by_id(id).ok_or_else(|| format!("unknown model {id:?} (see `models`, or give a .gguf file)"))?;
-    if !craft_ai::fetch::is_downloaded(entry, &dir) {
-        return Err(format!("{id} is not downloaded in {} (craft-ai-cli download {id})", dir.display()));
-    }
-    let model =
-        craft_ai::local::LocalGguf::load_on(entry, &craft_ai::fetch::model_path(entry, &dir), &craft_ai::fetch::tokenizer_path(entry, &dir), device)
-            .map_err(|e| e.to_string())?;
-    Ok(Box::new(model))
+fn local(
+    id: &str,
+    name: &str,
+    gguf: &std::path::Path,
+    tokenizer: &std::path::Path,
+    arch: Option<craft_ai::Arch>,
+    template: Option<craft_ai::Template>,
+    device: craft_ai::DeviceChoice,
+) -> Result<Box<dyn Provider>, String> {
+    let spec = craft_ai::local::LoadSpec { id: id.into(), name: name.into(), gguf, tokenizer, arch, template, device };
+    Ok(Box::new(craft_ai::local::LocalGguf::load_spec(&spec).map_err(|e| e.to_string())?))
 }
 
 #[cfg(not(feature = "local"))]
-fn local(_: &str, _: &Args, _: craft_ai::DeviceChoice) -> Result<Box<dyn Provider>, String> {
-    Err("this build has no local models (built without the `local` feature); use --endpoint".into())
+fn local(
+    _: &str,
+    _: &str,
+    _: &std::path::Path,
+    _: &std::path::Path,
+    _: Option<craft_ai::Arch>,
+    _: Option<craft_ai::Template>,
+    _: craft_ai::DeviceChoice,
+) -> Result<Box<dyn Provider>, String> {
+    Err("this build has no local models (built without the `local` feature); use an endpoint".into())
 }
 
 fn opts(a: &Args) -> Result<GenOpts, String> {

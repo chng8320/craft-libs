@@ -9,7 +9,11 @@ mod device;
 mod error;
 mod provider;
 mod registry;
+mod template;
 mod translate;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod catalog;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
@@ -26,4 +30,5 @@ pub use error::AiError;
 pub use provider::OpenAiCompat;
 pub use provider::{GenOpts, Provider, ProviderInfo};
 pub use registry::{Arch, MODELS, ModelEntry, Quality, by_id, fits, suggest};
+pub use template::Template;
 pub use translate::{PdfGrammar, Segment, TranslateGrammar, is_protected_token, segment, translate_segments};
