@@ -12,6 +12,7 @@
 //! craft-ai-cli translate --model qwen3-8b-q4km --device cuda --to Vietnamese --file in.txt
 //! craft-ai-cli translate --model /models/my-model.gguf --device cpu --to fr --text "Hello"
 //! craft-ai-cli devices
+//! craft-ai-cli transcribe --file talk.mp4 --model whisper-large-v3-turbo --device gpu --language vi
 //! ```
 //!
 //! `--device` picks the processor: `auto` (the default: a GPU when this build supports one and the
@@ -38,6 +39,10 @@ use serde_json::{Value, json};
 const HELP: &str = "\
 craft-ai-cli models   [--dir DIR] [--catalog FILE]
 craft-ai-cli devices
+craft-ai-cli transcribe --file AUDIO [--model whisper-small] [--device D] [--language vi|auto] [--speakers N]
+  any audio or video FFmpeg reads (raw mono 16 kHz f32 when it ends in .f32); --model is a built-in Whisper
+  model, or a catalogue speech model (a Whisper folder or an endpoint); default CRAFT_AI_SPEECH_MODEL, else
+  whisper-small
 craft-ai-cli download <model id> [--dir DIR] [--catalog FILE]
 craft-ai-cli complete  <model> (--prompt TEXT | --prompt-file FILE) [--max-tokens N] [--temperature T]
 craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segments-file FILE.json)
@@ -82,6 +87,7 @@ fn main() -> ExitCode {
         Some("download") => download(&args),
         Some("complete") => complete(&args),
         Some("translate") => translate(&args),
+        Some("transcribe") => transcribe(&args),
         Some("help" | "--help" | "-h") | None => {
             println!("{HELP}");
             return ExitCode::SUCCESS;
@@ -155,6 +161,7 @@ fn models(a: &Args) -> Result<Value, String> {
         "backends": craft_ai::compiled_backends(),
         "default_model": default_model(),
         "models": list,
+        "speech": speech_models(&dir)?,
     }))
 }
 
@@ -182,6 +189,11 @@ fn found_gpus() -> Vec<(String, String)> {
 fn download(a: &Args) -> Result<Value, String> {
     let id = a.0.get(1).filter(|s| !s.starts_with("--")).ok_or("download: which model? (see `models`)")?;
     let dir = a.dir()?;
+    if let Some(m) = craft_ai::speech::models::find(id) {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        craft_ai::speech::models::download(&dir, m, &mut |_, _, _| true).map_err(|e| e.to_string())?;
+        return Ok(json!({ "model": m.id, "task": "speech-to-text", "dir": craft_ai::speech::models::model_dir(&dir, m), "verified": true }));
+    }
     let cat = catalog(a, &dir)?;
     let m = cat.find(id).ok_or_else(|| format!("unknown model {id:?} (see `models`)"))?;
     let craft_ai::catalog::Source::Download(entry) = m.source else {
@@ -390,4 +402,76 @@ fn protected_runs(text: &str) -> Vec<String> {
     }
     runs.sort();
     runs
+}
+
+/// The speech models: built in (Whisper, downloaded into the model folder) and the catalogue's.
+fn speech_models(dir: &std::path::Path) -> Result<Vec<Value>, String> {
+    use craft_ai::speech::{catalog, models};
+    let mut v: Vec<Value> = models::catalogue()
+        .iter()
+        .map(|m| {
+            json!({ "id": m.id, "name": m.name, "kind": "download", "task": "speech-to-text", "size": m.size(),
+                "multilingual": m.multilingual, "license": m.license, "downloaded": models::installed(dir, m) })
+        })
+        .collect();
+    for m in catalog::load(&catalog::default_files(dir)).map_err(|e| e.to_string())? {
+        v.retain(|x| x["id"] != m.id.as_str());
+        v.push(match &m.source {
+            catalog::Source::Folder(f) => json!({ "id": m.id, "name": m.name, "kind": "folder", "task": "speech-to-text", "dir": f,
+                "downloaded": f.join("model.safetensors").is_file(), "device": m.device.map(|d| d.to_string()), "from": m.origin }),
+            catalog::Source::Endpoint { endpoint, model, token_env } => json!({ "id": m.id, "name": m.name, "kind": "endpoint",
+                "task": "speech-to-text", "endpoint": endpoint, "remote_model": model, "token_env": token_env, "from": m.origin }),
+        });
+    }
+    Ok(v)
+}
+
+/// Mono 16 kHz samples of `file`: read directly when it is raw f32 (`.f32`), else decoded by FFmpeg
+/// (`CRAFT_LIVE_FFMPEG`, else `ffmpeg`).
+fn audio(file: &str) -> Result<Vec<f32>, String> {
+    let bytes = if file.ends_with(".f32") {
+        std::fs::read(file).map_err(|e| format!("{file}: {e}"))?
+    } else {
+        let ffmpeg = std::env::var("CRAFT_LIVE_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let out = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"])
+            .output()
+            .map_err(|e| format!("FFmpeg is needed to read {file}: {ffmpeg}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("FFmpeg could not read {file}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        out.stdout
+    };
+    Ok(bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
+}
+
+fn transcribe(a: &Args) -> Result<Value, String> {
+    let file = a.flag("--file").ok_or("transcribe: --file AUDIO")?;
+    let id = a
+        .flag("--model")
+        .map(str::to_string)
+        .or_else(|| std::env::var("CRAFT_AI_SPEECH_MODEL").ok().filter(|m| !m.is_empty()))
+        .unwrap_or_else(|| "whisper-small".into());
+    let device = a.flag("--device").map(str::parse::<craft_ai::DeviceChoice>).transpose()?;
+    let dir = a.dir()?;
+    if !craft_ai::speech::known(&dir, &id) {
+        return Err(format!("unknown speech model {id:?} (see `models`)"));
+    }
+    let t = craft_ai::speech::load(&dir, &id, device).map_err(|e| e.to_string())?;
+    let samples = audio(file)?;
+    let mut o = craft_ai::speech::Options { language: a.flag("--language").map(str::to_string).filter(|l| l != "auto"), ..Default::default() };
+    match a.num::<usize>("--speakers")? {
+        Some(n) => o.max_speakers = n.max(1),
+        None => o.diarize = false,
+    }
+    let tr = t.transcribe(&samples, &o, &mut |_, _| true).map_err(|e| e.to_string())?;
+    let words: Vec<Value> = tr
+        .words
+        .iter()
+        .map(|w| json!({ "text": w.text, "start": w.start.seconds(), "end": w.end.seconds(), "speaker": w.speaker, "confidence": w.confidence }))
+        .collect();
+    Ok(json!({
+        "model": t.id(), "device": t.device(), "language": tr.language, "seconds": samples.len() as f64 / 16_000.0,
+        "text": tr.text(), "speakers": tr.speakers.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), "words": words,
+    }))
 }

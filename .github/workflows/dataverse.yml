@@ -61,10 +61,10 @@ jobs:
           ref: dataverse
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build the AI command line (craft-ai with local models)
-        run: cargo build --release -p craft-ai --features local --example craft-ai-cli
+      - name: Build the AI command line (craft-ai with local models and speech to text)
+        run: cargo build --release -p craft-ai --features local,speech --example craft-ai-cli
       - name: Test craft-ai
-        run: cargo test --release -p craft-ai --features local && cargo test --release -p craft-live
+        run: cargo test --release -p craft-ai --features local,speech && cargo test --release -p craft-live
       - name: Name it for the Dataverse
         run: |
           mkdir -p out

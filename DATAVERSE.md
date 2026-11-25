@@ -45,3 +45,12 @@ command lines: `dataverse-ai-cli-linux-x86_64` (CPU) and `dataverse-ai-cli-linux
 `{prompt}` plus `stop`) and `device`. Entries carry a `task`; craft-ai reads `chat` (the default) and
 leaves other tasks (`speech-to-text`, …) to their engines, so one file serves all of them. Local
 architectures: qwen2, qwen3, llama (and Llama-built models such as Mistral and SmolLM2), gemma3, phi3.
+
+## Speech to text (craft_ai::speech)
+
+Moved here from FilmCraft (`crates/speech`) so every engine uses one implementation: Whisper on candle
+(feature `speech`; CPU, or GPU with `cuda`/`metal`), the pinned and checksummed Whisper catalogue and its
+downloader, speaker labelling, word-edge tightening, catalogue speech models (`task: "speech-to-text"`: Whisper
+folders and OpenAI-compatible endpoints). Times are 16 kHz samples (`Samples`), which each app maps to its own
+time base. `craft-ai-cli transcribe --file AUDIO [--model] [--device] [--language] [--speakers N]`; `download`
+and `models` cover speech models too.

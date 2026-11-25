@@ -14,6 +14,8 @@ mod translate;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod catalog;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod speech;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
@@ -25,6 +27,8 @@ pub mod local;
 pub mod probe;
 
 pub use device::{DeviceChoice, compiled_backends};
+#[cfg(any(feature = "local", feature = "speech"))]
+pub use device::{gpus, open as open_device};
 pub use error::AiError;
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::OpenAiCompat;

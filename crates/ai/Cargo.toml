@@ -23,14 +23,25 @@ candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
 candle-transformers = { version = "0.9", optional = true }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+rayon = { workspace = true }
 
 [features]
 # Local GGUF inference on candle. Heavy dependency tree; apps opt in.
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+# Speech to text with Whisper on candle (pure Rust), on the CPU or a GPU (with `cuda` or `metal`).
+speech = ["dep:candle-core", "dep:candle-nn"]
 # Local models on an NVIDIA GPU (needs the CUDA toolkit to build, the NVIDIA driver to run).
-cuda = ["local", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+cuda = ["local", "speech", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 # Local models on an Apple GPU (macOS).
-metal = ["local", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+metal = ["local", "speech", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[[example]]
+name = "transcribe"
+required-features = ["speech"]
+
+[[test]]
+name = "speech_whisper"
+required-features = ["speech"]

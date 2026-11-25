@@ -13,6 +13,7 @@ use std::path::Path;
 
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, IndexOp, Tensor};
+
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::{quantized_gemma3, quantized_llama, quantized_phi3, quantized_qwen2, quantized_qwen3};
 use tokenizers::Tokenizer;
@@ -51,71 +52,7 @@ impl Weights {
     }
 }
 
-/// Open the processor `choice` names. The label says what was opened, for
-/// the status line and command-line results; `Auto` that finds no GPU
-/// says so in the label rather than failing.
-pub fn open_device(choice: DeviceChoice) -> Result<(Device, String), AiError> {
-    match choice {
-        DeviceChoice::Cpu => Ok((Device::Cpu, "CPU".into())),
-        DeviceChoice::Cuda(n) => cuda(n),
-        DeviceChoice::Metal(n) => metal(n),
-        DeviceChoice::Gpu => any_gpu(),
-        DeviceChoice::Auto => Ok(any_gpu().unwrap_or_else(|e| (Device::Cpu, format!("CPU ({e})")))),
-    }
-}
-
-fn cuda(n: usize) -> Result<(Device, String), AiError> {
-    if !cfg!(feature = "cuda") {
-        return Err(AiError::Inference("this build has no NVIDIA GPU support (it was built without the `cuda` feature)".into()));
-    }
-    Device::new_cuda(n).map(|d| (d, format!("NVIDIA GPU {n} (CUDA)"))).map_err(|e| AiError::Inference(format!("cannot open NVIDIA GPU {n}: {e}")))
-}
-
-fn metal(n: usize) -> Result<(Device, String), AiError> {
-    if !cfg!(feature = "metal") {
-        return Err(AiError::Inference("this build has no Apple GPU support (it was built without the `metal` feature)".into()));
-    }
-    Device::new_metal(n).map(|d| (d, format!("Apple GPU {n} (Metal)"))).map_err(|e| AiError::Inference(format!("cannot open Apple GPU {n}: {e}")))
-}
-
-fn any_gpu() -> Result<(Device, String), AiError> {
-    if !cfg!(feature = "cuda") && !cfg!(feature = "metal") {
-        return Err(AiError::Inference("no GPU support in this build".into()));
-    }
-    let mut why = Vec::new();
-    let backends: [fn(usize) -> Result<(Device, String), AiError>; 2] = [cuda, metal];
-    for open in backends {
-        match open(0) {
-            Ok(d) => return Ok(d),
-            Err(e) => why.push(e.to_string()),
-        }
-    }
-    Err(AiError::Inference(format!("no usable GPU: {}", why.join("; "))))
-}
-
-/// The GPUs this build can open on this machine, as `(device, label)`
-/// pairs like `("cuda:0", "NVIDIA GPU 0 (CUDA)")`. Opening each one costs
-/// a moment, so this is for listings, not for every run.
-pub fn gpus() -> Vec<(String, String)> {
-    let mut found = Vec::new();
-    if cfg!(feature = "cuda") {
-        for n in 0..16 {
-            match cuda(n) {
-                Ok((_, label)) => found.push((format!("cuda:{n}"), label)),
-                Err(_) => break,
-            }
-        }
-    }
-    if cfg!(feature = "metal") {
-        for n in 0..4 {
-            match metal(n) {
-                Ok((_, label)) => found.push((format!("metal:{n}"), label)),
-                Err(_) => break,
-            }
-        }
-    }
-    found
-}
+pub use crate::device::{gpus, open as open_device};
 
 /// What to load: a GGUF and its tokenizer, and whatever the caller knows
 /// about it. `None` fields are read from the file.
