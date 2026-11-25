@@ -18,13 +18,28 @@ pub enum Quality {
     Tiny,
     Small,
     Medium,
+    Large,
 }
 
 /// Which candle architecture loads the GGUF.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arch {
     Qwen2,
+    Qwen3,
     Llama,
+}
+
+impl Arch {
+    /// The architecture a GGUF's `general.architecture` names, when this
+    /// crate can run it.
+    pub fn from_gguf_name(name: &str) -> Option<Self> {
+        match name {
+            "qwen2" => Some(Self::Qwen2),
+            "qwen3" => Some(Self::Qwen3),
+            "llama" => Some(Self::Llama),
+            _ => None,
+        }
+    }
 }
 
 /// One downloadable model.
@@ -104,9 +119,53 @@ pub static MODELS: &[ModelEntry] = &[
         arch: Arch::Qwen2,
         langs: "29+ languages incl. EN/ZH/FR/DE/ES/JA/KO/RU",
     },
+    ModelEntry {
+        id: "qwen3-1.7b-q8",
+        name: "Qwen3 1.7B (Q8_0)",
+        url: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
+        file: "Qwen3-1.7B-Q8_0.gguf",
+        tokenizer_url: "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/tokenizer.json",
+        sha256: None,
+        size_mb: 1749,
+        min_ram_gb: 4.0,
+        rec_ram_gb: 8.0,
+        license: "Apache-2.0",
+        quality: Quality::Small,
+        arch: Arch::Qwen3,
+        langs: "119 languages incl. EN/ZH/VI/TH/ID/JA/KO/FR/DE/ES",
+    },
+    ModelEntry {
+        id: "qwen3-4b-q4km",
+        name: "Qwen3 4B (Q4_K_M)",
+        url: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+        file: "Qwen3-4B-Q4_K_M.gguf",
+        tokenizer_url: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
+        sha256: None,
+        size_mb: 2382,
+        min_ram_gb: 6.0,
+        rec_ram_gb: 12.0,
+        license: "Apache-2.0",
+        quality: Quality::Medium,
+        arch: Arch::Qwen3,
+        langs: "119 languages incl. EN/ZH/VI/TH/ID/JA/KO/FR/DE/ES",
+    },
+    ModelEntry {
+        id: "qwen3-8b-q4km",
+        name: "Qwen3 8B (Q4_K_M)",
+        url: "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+        file: "Qwen3-8B-Q4_K_M.gguf",
+        tokenizer_url: "https://huggingface.co/Qwen/Qwen3-8B/resolve/main/tokenizer.json",
+        sha256: None,
+        size_mb: 4795,
+        min_ram_gb: 10.0,
+        rec_ram_gb: 16.0,
+        license: "Apache-2.0",
+        quality: Quality::Large,
+        arch: Arch::Qwen3,
+        langs: "119 languages incl. EN/ZH/VI/TH/ID/JA/KO/FR/DE/ES",
+    },
     // NOTE: Qwen2.5-3B was removed — its `qwen-research` license is
-    // non-commercial and breaks the permissive-only rule above. No
-    // permissively-licensed Medium-tier candidate is currently curated.
+    // non-commercial and breaks the permissive-only rule above.
 ];
 
 /// Look up a model by stable id.
@@ -122,12 +181,14 @@ pub fn fits(caps: &MachineCaps, entry: &ModelEntry) -> bool {
 }
 
 /// The default suggestion for `caps`: best quality that fits, preferring
-/// 3B on roomy machines, 1.5B mid-range, 0.5B on small ones. Returns
+/// 8B on roomy machines, 4B on good ones, 1.5B mid-range, 0.5B on small ones. Returns
 /// `None` when nothing fits — the UI then says so honestly instead of
 /// offering a download that can't run.
 pub fn suggest(caps: &MachineCaps) -> Option<&'static ModelEntry> {
     let capable: Vec<&ModelEntry> = MODELS.iter().filter(|m| fits(caps, m)).collect();
-    let best_allowed = if caps.vram_gb.is_some_and(|v| v >= 6.0) || caps.ram_gb >= 16.0 {
+    let best_allowed = if caps.vram_gb.is_some_and(|v| v >= 10.0) || caps.ram_gb >= 32.0 {
+        Quality::Large
+    } else if caps.vram_gb.is_some_and(|v| v >= 6.0) || caps.ram_gb >= 16.0 {
         Quality::Medium
     } else if caps.ram_gb >= 8.0 {
         Quality::Small

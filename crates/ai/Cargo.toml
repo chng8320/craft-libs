@@ -27,6 +27,10 @@ tokenizers = { version = "0.22", optional = true, default-features = false, feat
 [features]
 # Local GGUF inference on candle. Heavy dependency tree; apps opt in.
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+# Local models on an NVIDIA GPU (needs the CUDA toolkit to build, the NVIDIA driver to run).
+cuda = ["local", "candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# Local models on an Apple GPU (macOS).
+metal = ["local", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
 
 [dev-dependencies]
 tempfile = "3"

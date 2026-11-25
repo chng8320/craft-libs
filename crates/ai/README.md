@@ -30,6 +30,7 @@ Runs once, caches the result:
 | Total/free RAM | `sysinfo` or `std::alloc`-safe OS calls |
 | CPU threads + features | `std::thread`, `is_x86_feature_detected!` (AVX2 gates Q4 speed) |
 | GPU + VRAM | `wgpu` adapter info (apps already link wgpu — reuse, don't re-probe) |
+| Where a local model runs | `DeviceChoice`: `auto`, `cpu`, `gpu`, `cuda[:N]` (feature `cuda`), `metal[:N]` (feature `metal`); `local::gpus()` lists what this build can open |
 | Free disk at the model cache dir | `fs2`/`std::fs` |
 | Network reachability | optional HEAD to the model host, skipped offline |
 

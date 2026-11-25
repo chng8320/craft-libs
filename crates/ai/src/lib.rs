@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod device;
 mod error;
 mod provider;
 mod registry;
@@ -19,6 +20,7 @@ pub mod local;
 // the OS probe itself is native-only.
 pub mod probe;
 
+pub use device::{DeviceChoice, compiled_backends};
 pub use error::AiError;
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::OpenAiCompat;

@@ -9,7 +9,15 @@
 //! craft-ai-cli translate --model qwen2.5-1.5b-q4km --to Vietnamese --text "Hello, world"
 //! craft-ai-cli translate --endpoint http://localhost:11434/v1 --remote-model qwen2.5 --to fr --segments-file in.json
 //! craft-ai-cli complete --model qwen2.5-1.5b-q4km --prompt-file prompt.txt --max-tokens 400
+//! craft-ai-cli translate --model qwen3-8b-q4km --device cuda --to Vietnamese --file in.txt
+//! craft-ai-cli translate --model /models/my-model.gguf --device cpu --to fr --text "Hello"
+//! craft-ai-cli devices
 //! ```
+//!
+//! `--device` picks the processor: `auto` (the default: a GPU when this build supports one and the
+//! machine has it, else the CPU), `cpu`, `gpu` (any GPU, an error without one), `cuda[:N]` or
+//! `metal[:N]`. GPUs need a build with the `cuda` or `metal` feature. The CPU uses every core;
+//! set `RAYON_NUM_THREADS` to use fewer.
 //!
 //! Models live in `--dir`, else `CRAFT_AI_MODELS`, else the suite's shared cache. A token for an
 //! endpoint is read from the environment variable `--token-env` names (default
@@ -23,15 +31,19 @@ use serde_json::{Value, json};
 
 const HELP: &str = "\
 craft-ai-cli models   [--dir DIR]
+craft-ai-cli devices
 craft-ai-cli download <model id> [--dir DIR]
 craft-ai-cli complete  <model> (--prompt TEXT | --prompt-file FILE) [--max-tokens N] [--temperature T]
 craft-ai-cli translate <model> --to LANGUAGE (--text TEXT | --file FILE | --segments-file FILE.json)
-  <model>: --model ID [--dir DIR]   a local model from `models` (downloaded first)
+  <model>: --model ID [--dir DIR] [--device D]   a local model from `models` (downloaded first)
+       or: --model FILE.gguf [--tokenizer FILE] [--device D]   any ChatML GGUF of a qwen2, qwen3 or
+           llama architecture (the tokenizer defaults to tokenizer.json beside it)
        or: --endpoint URL --remote-model NAME [--token-env VAR]   any OpenAI-compatible API
   --segments-file: a JSON array of strings; the answer keeps their order and count, and
   protected runs (URLs, e-mail addresses, {placeholders}, <markup>, numbers) come back unchanged.
   Each text goes to the model whole, so sentences around a placeholder are translated as one; a
-  translation that loses or adds a protected run is redone split at them. --split always splits.";
+  translation that loses or adds a protected run is redone split at them. --split always splits.
+  --device: auto (default), cpu, gpu, cuda, cuda:N, metal, metal:N.";
 
 struct Args(Vec<String>);
 
@@ -57,6 +69,7 @@ fn main() -> ExitCode {
     let args = Args(std::env::args().skip(1).collect());
     let result = match args.0.first().map(String::as_str) {
         Some("models") => models(&args),
+        Some("devices") => devices(),
         Some("download") => download(&args),
         Some("complete") => complete(&args),
         Some("translate") => translate(&args),
@@ -88,13 +101,33 @@ fn models(a: &Args) -> Result<Value, String> {
             json!({
                 "id": m.id, "name": m.name, "size_mb": m.size_mb, "min_ram_gb": m.min_ram_gb, "rec_ram_gb": m.rec_ram_gb,
                 "license": m.license, "languages": m.langs, "quality": format!("{:?}", m.quality),
-                "downloaded": craft_ai::fetch::is_downloaded(m, &dir), "fits": fits(&caps, m), "suggested": suggested == Some(m.id),
+                "arch": format!("{:?}", m.arch).to_lowercase(), "downloaded": craft_ai::fetch::is_downloaded(m, &dir), "fits": fits(&caps, m), "suggested": suggested == Some(m.id),
             })
         })
         .collect();
-    Ok(
-        json!({ "dir": dir, "machine": { "ram_gb": caps.ram_gb, "threads": caps.threads, "avx2": caps.avx2, "disk_free_gb": caps.disk_free_gb }, "models": list }),
-    )
+    Ok(json!({
+        "dir": dir,
+        "machine": { "ram_gb": caps.ram_gb, "threads": caps.threads, "avx2": caps.avx2, "disk_free_gb": caps.disk_free_gb },
+        "backends": craft_ai::compiled_backends(),
+        "models": list,
+    }))
+}
+
+/// The back ends this build has and the GPUs it can open here.
+fn devices() -> Result<Value, String> {
+    let gpus: Vec<Value> = found_gpus().into_iter().map(|(device, label)| json!({ "device": device, "label": label })).collect();
+    let auto = if gpus.is_empty() { "cpu".to_string() } else { gpus[0]["device"].as_str().unwrap_or("cpu").to_string() };
+    Ok(json!({ "backends": craft_ai::compiled_backends(), "gpus": gpus, "auto": auto }))
+}
+
+#[cfg(feature = "local")]
+fn found_gpus() -> Vec<(String, String)> {
+    craft_ai::local::gpus()
+}
+
+#[cfg(not(feature = "local"))]
+fn found_gpus() -> Vec<(String, String)> {
+    Vec::new()
 }
 
 fn download(a: &Args) -> Result<Value, String> {
@@ -127,22 +160,31 @@ fn provider(a: &Args) -> Result<Box<dyn Provider>, String> {
         return Ok(Box::new(craft_ai::OpenAiCompat::new(endpoint, token, model)));
     }
     let id = a.flag("--model").ok_or("say which model: --model ID, or --endpoint URL --remote-model NAME")?;
-    local(id, &a.dir()?)
+    let device: craft_ai::DeviceChoice = a.flag("--device").unwrap_or("auto").parse()?;
+    local(id, a, device)
 }
 
 #[cfg(feature = "local")]
-fn local(id: &str, dir: &std::path::Path) -> Result<Box<dyn Provider>, String> {
-    let entry = by_id(id).ok_or_else(|| format!("unknown model {id:?} (see `models`)"))?;
-    if !craft_ai::fetch::is_downloaded(entry, dir) {
+fn local(id: &str, a: &Args, device: craft_ai::DeviceChoice) -> Result<Box<dyn Provider>, String> {
+    let path = std::path::Path::new(id);
+    if by_id(id).is_none() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) {
+        let tokenizer = a.flag("--tokenizer").map_or_else(|| path.with_file_name("tokenizer.json"), PathBuf::from);
+        let model = craft_ai::local::LocalGguf::load_file(path, &tokenizer, device).map_err(|e| e.to_string())?;
+        return Ok(Box::new(model));
+    }
+    let dir = a.dir()?;
+    let entry = by_id(id).ok_or_else(|| format!("unknown model {id:?} (see `models`, or give a .gguf file)"))?;
+    if !craft_ai::fetch::is_downloaded(entry, &dir) {
         return Err(format!("{id} is not downloaded in {} (craft-ai-cli download {id})", dir.display()));
     }
-    let model = craft_ai::local::LocalGguf::load(entry, &craft_ai::fetch::model_path(entry, dir), &craft_ai::fetch::tokenizer_path(entry, dir))
-        .map_err(|e| e.to_string())?;
+    let model =
+        craft_ai::local::LocalGguf::load_on(entry, &craft_ai::fetch::model_path(entry, &dir), &craft_ai::fetch::tokenizer_path(entry, &dir), device)
+            .map_err(|e| e.to_string())?;
     Ok(Box::new(model))
 }
 
 #[cfg(not(feature = "local"))]
-fn local(_: &str, _: &std::path::Path) -> Result<Box<dyn Provider>, String> {
+fn local(_: &str, _: &Args, _: craft_ai::DeviceChoice) -> Result<Box<dyn Provider>, String> {
     Err("this build has no local models (built without the `local` feature); use --endpoint".into())
 }
 
